@@ -12,10 +12,10 @@ data RawObject = ObjectData
   deriving (Show)
 
 data TreeObjectEntry = TreeObjectEntry
-  { toeMode :: String,
-    toeType :: ObjectType,
-    toeID :: ObjectID,
-    toeName :: String
+  { entryMode :: String,
+    entryType :: ObjectType,
+    entryID :: ObjectID,
+    entryName :: String
   }
   deriving (Show)
 
@@ -55,8 +55,8 @@ treeEntryFromRawLine :: String -> TreeObjectEntry
 treeEntryFromRawLine rawLine =
   let ws = words rawLine
    in TreeObjectEntry
-        { toeMode = head ws,
-          toeType = if ws !! 1 == "blob" then TypeBlob else TypeTree, -- Yeah whatever.
-          toeID = ws !! 2,
-          toeName = ws !! 3
+        { entryMode = head ws,
+          entryType = if ws !! 1 == "blob" then TypeBlob else TypeTree, -- Yeah whatever.
+          entryID = ws !! 2,
+          entryName = ws !! 3
         }
