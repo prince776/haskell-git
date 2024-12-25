@@ -6,7 +6,8 @@ import Crypto.Hash (Digest, SHA1, hash)
 import Data.ByteString.Char8 (pack)
 import Data.List (partition)
 import qualified GHC.Base as Monad
-import System.Directory (doesDirectoryExist, listDirectory)
+import GHC.Read (readField)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath (takeFileName, (</>))
 
 {-
@@ -21,12 +22,15 @@ git commit -m "Commit Name"
 -- to adhere to the interface, and switch here.
 newtype GitClient = GitClient (String, FSContentStore) -- (RepoRoot, ContentStore)
 
-commitTree :: GitClient -> String -> IO ()
-commitTree (GitClient (repoRoot, fsClient)) commitMsg = do
+commitTree :: GitClient -> String -> String -> IO ()
+commitTree (GitClient (repoRoot, fsClient)) branch commitMsg = do
   treeEntry <- writeTree fsClient repoRoot
-  let commitObj = GitCommmit $ CommitObject (entryID treeEntry, commitMsg)
+  let FileSystemStore fsRoot = fsClient
+  prevCommitID <- readBranchRef fsRoot branch
+  let commitObj = GitCommmit $ CommitObject (entryID treeEntry, prevCommitID, commitMsg)
   let (commitObjStr, commitObjStoreID) = serializeObj $ toRawObject commitObj
   storeIfNotExist fsClient commitObjStoreID commitObjStr
+  updateBranchRef fsRoot branch commitObjStoreID
   return ()
 
 writeTree :: FSContentStore -> String -> IO TreeObjectEntry
@@ -84,11 +88,15 @@ newtype TreeObject = TreeObject [TreeObjectEntry] deriving (Show)
 {-
 Data Format:
 <treeObjectID>
+<prevCommitID>
 <Commit Message>
 -}
-newtype CommitObject = CommitObject (ObjectID, String) deriving (Show)
+newtype CommitObject = CommitObject (ObjectID, ObjectID, String) deriving (Show)
 
 data GitObject = GitBlob BlobObject | GitTree TreeObject | GitCommmit CommitObject deriving (Show)
+
+nullCommitID :: ObjectID
+nullCommitID = "<NULL COMMIT>"
 
 fromRawObject :: RawObject -> GitObject
 fromRawObject rawObj
@@ -96,8 +104,9 @@ fromRawObject rawObj
   | objType rawObj == TypeTree = GitTree $ treeObjectFromRawData $ objData rawObj
   | objType rawObj == TypeCommit =
       let (treeID, rest) = break (== '\n') (objData rawObj)
-          commitMsg = drop 1 rest
-       in GitCommmit $ CommitObject (treeID, commitMsg)
+          (prevCommitID, restMsg) = break (== '\n') rest
+          commitMsg = drop 1 restMsg
+       in GitCommmit $ CommitObject (treeID, prevCommitID, commitMsg)
   | otherwise = undefined
 
 toRawObject :: GitObject -> RawObject
@@ -106,8 +115,8 @@ toRawObject gitObj = case gitObj of
   GitTree (TreeObject treeEntries) ->
     let rawData = join $ map (\e -> treeEntryToRaw e ++ "\n") treeEntries -- Yay mom, thought of fmap here, and join again
      in ObjectData {objType = TypeTree, objLength = length rawData, objData = rawData}
-  GitCommmit (CommitObject (treeID, commitMsg)) ->
-    let rawData = treeID ++ "\n" ++ commitMsg
+  GitCommmit (CommitObject (treeID, prevCommitID, commitMsg)) ->
+    let rawData = treeID ++ "\n" ++ prevCommitID ++ "\n" ++ commitMsg
      in ObjectData {objType = TypeCommit, objLength = length rawData, objData = rawData}
 
 parseRawObject :: String -> RawObject
@@ -168,3 +177,37 @@ serializeObj rawObj =
   let finalStr = unwords [serializeType $ objType rawObj, show $ objLength rawObj, objData rawObj]
       id = sha1Hash finalStr
    in (finalStr, id)
+
+headTracker :: String
+headTracker = "HEAD"
+
+refsSubDir :: FilePath -> FilePath
+refsSubDir rootPath = rootPath </> "refs"
+
+-- readHEADCommitID :: () -> IO ObjectID
+-- readHEADCommitID _ = do
+--   headExists <- doesFileExist headTracker
+--   if headExists
+--     then do
+--       branchName <- readFile headTracker
+--       readBranchRef gitC branchName
+--     else return nullCommitID
+
+-- updateHEADBranch :: String -> IO ()
+
+-- updatePrevCommitID branchName = do
+--   writeFile headTracker commitID
+
+updateBranchRef :: FilePath -> String -> ObjectID -> IO ()
+updateBranchRef rootPath branchName commitID = do
+  createDirectoryIfMissing True $ refsSubDir rootPath
+  writeFile (refsSubDir rootPath </> branchName) commitID
+
+readBranchRef :: FilePath -> String -> IO ObjectID
+readBranchRef rootDir branchName = do
+  let fileName = refsSubDir rootDir </> branchName
+  isRefPresent <- doesFileExist fileName
+  if isRefPresent
+    then
+      readFile fileName
+    else return nullCommitID
