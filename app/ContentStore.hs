@@ -21,10 +21,18 @@ instance ContentStore FSContentStore where
     fetch (FileSystemStore baseDir) key = do
       let (dir, file) = splitKey key
       let filePath = baseDir </> dir </> file
-      exists <- doesFileExist filePath        -- Check if the file exists
+      exists <- doesFileExist filePath
       if exists
         then fmap Just $ readFile filePath
         else return Nothing     
 
+storeIfNotExist :: ContentStore s => s -> String -> String -> IO s
+storeIfNotExist cs key value = do
+  existing <- fetch cs key
+  case existing of 
+    Just _ -> return cs
+    Nothing-> store cs key value
+
 splitKey :: String -> (String, String)
 splitKey key = (take 2 key, drop 2 key)
+

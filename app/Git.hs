@@ -1,6 +1,33 @@
 module Git where
 
-data ObjectType = TypeBlob | TypeTree deriving (Eq, Show)
+import ContentStore
+import Control.Monad (join)
+import Crypto.Hash (Digest, SHA1, hash)
+import Data.ByteString.Char8 (pack)
+
+{-
+We are not gonna have a staging area, and granularity for commiting for simplicity.
+Workflow would look like
+git commit -m "Commit Name"
+-- This will write-tree, and then create a commit.
+-}
+
+-- We can technically depend on the content store interface here, but it's fine, I don't wanna
+-- complicate. Having an interface is still good as newer impl (if i ever make), will just need
+-- to adhere to the interface, and switch here.
+newtype GitClient = GitClient (String, FSContentStore) -- (RepoRoot, ContentStore)
+
+commitTree :: GitClient -> String -> IO GitClient
+commitTree client commitMsg = do
+  (treeID, nextClient) <- writeTree client
+  let commitObj = CommitObject (treeID, commitMsg)
+
+  return nextClient
+
+writeTree :: GitClient -> IO (ObjectID, GitClient)
+writeTree = undefined
+
+data ObjectType = TypeBlob | TypeTree | TypeCommit deriving (Eq, Show)
 
 type ObjectID = String -- sha 1 hash
 
@@ -23,13 +50,34 @@ newtype BlobObject = BlobObject String deriving (Show)
 
 newtype TreeObject = TreeObject [TreeObjectEntry] deriving (Show)
 
-data GitObject = GitBlob BlobObject | GitTree TreeObject deriving (Show)
+{-
+Data Format:
+<treeObjectID>
+<Commit Message>
+-}
+newtype CommitObject = CommitObject (ObjectID, String) deriving (Show)
+
+data GitObject = GitBlob BlobObject | GitTree TreeObject | GitCommmit CommitObject deriving (Show)
 
 fromRawObject :: RawObject -> GitObject
 fromRawObject rawObj
   | objType rawObj == TypeBlob = GitBlob $ BlobObject $ objData rawObj
   | objType rawObj == TypeTree = GitTree $ treeObjectFromRawData $ objData rawObj
+  | objType rawObj == TypeCommit =
+      let (treeID, rest) = break (== '\n') (objData rawObj)
+          commitMsg = drop 1 rest
+       in GitCommmit $ CommitObject (treeID, commitMsg)
   | otherwise = undefined
+
+toRawObject :: GitObject -> RawObject
+toRawObject gitObj = case gitObj of
+  GitBlob (BlobObject blobData) -> ObjectData {objType = TypeBlob, objLength = length blobData, objData = blobData}
+  GitTree (TreeObject treeEntries) ->
+    let rawData = join $ map (\e -> treeEntryToRaw e ++ "\n") treeEntries -- Yay mom, thought of fmap here, and join again
+     in ObjectData {objType = TypeTree, objLength = length rawData, objData = rawData}
+  GitCommmit (CommitObject (treeID, commitMsg)) ->
+    let rawData = treeID ++ "\n" ++ commitMsg
+     in ObjectData {objType = TypeCommit, objLength = length rawData, objData = rawData}
 
 parseRawObject :: String -> RawObject
 parseRawObject rawData =
@@ -38,6 +86,7 @@ parseRawObject rawData =
       objectType = case objTypeStr of
         "blob" -> TypeBlob
         "tree" -> TypeTree
+        "commit" -> TypeCommit
         _ -> error $ "Unknown object type: " ++ objTypeStr
       objectLength = read (drop 1 objLengthStr) :: Int
    in ObjectData
@@ -60,3 +109,30 @@ treeEntryFromRawLine rawLine =
           entryID = ws !! 2,
           entryName = ws !! 3
         }
+
+treeEntryToRaw :: TreeObjectEntry -> String
+treeEntryToRaw entry =
+  join -- YAY I THOUGHT OF MONAD JOIN
+    [ entryMode entry,
+      if entryType entry == TypeBlob then "blob" else "tree",
+      entryID entry,
+      entryName entry
+    ]
+
+-- Function to compute SHA1 hash
+sha1Hash :: String -> String
+sha1Hash input =
+  let digest = hash (pack input) :: Digest SHA1
+   in show digest
+
+serializeType :: ObjectType -> String
+serializeType objType = case objType of
+  TypeBlob -> "blob"
+  TypeTree -> "tree"
+  TypeCommit -> "commit"
+
+serializeObj :: RawObject -> (String, ObjectID) -- Data, ID
+serializeObj rawObj =
+  let finalStr = join [serializeType $ objType rawObj, show $ objLength rawObj, objData rawObj]
+      id = sha1Hash finalStr
+   in (finalStr, id)
