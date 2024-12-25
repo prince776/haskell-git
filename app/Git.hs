@@ -26,11 +26,21 @@ commitTree :: GitClient -> String -> String -> IO ()
 commitTree (GitClient (repoRoot, fsClient)) branch commitMsg = do
   treeEntry <- writeTree fsClient repoRoot
   let FileSystemStore fsRoot = fsClient
-  prevCommitID <- readBranchRef fsRoot branch
+  prevCommitIDForBranch <- readBranchRef fsRoot branch
+  putStrLn $ "prev commit for branch: " <> prevCommitIDForBranch
+  prevCommitID <-
+    if prevCommitIDForBranch == nullCommitID
+      then do
+        putStrLn "Reading head commit"
+        readHEADCommitID fsRoot
+      else do
+        return prevCommitIDForBranch
+  putStrLn $ "prev commit: " <> prevCommitID
   let commitObj = GitCommmit $ CommitObject (entryID treeEntry, prevCommitID, commitMsg)
   let (commitObjStr, commitObjStoreID) = serializeObj $ toRawObject commitObj
   storeIfNotExist fsClient commitObjStoreID commitObjStr
   updateBranchRef fsRoot branch commitObjStoreID
+  updateHEADBranch fsRoot branch
   return ()
 
 gitLog :: GitClient -> String -> IO ()
@@ -214,19 +224,20 @@ headTracker = "HEAD"
 refsSubDir :: FilePath -> FilePath
 refsSubDir rootPath = rootPath </> "refs"
 
--- readHEADCommitID :: () -> IO ObjectID
--- readHEADCommitID _ = do
---   headExists <- doesFileExist headTracker
---   if headExists
---     then do
---       branchName <- readFile headTracker
---       readBranchRef gitC branchName
---     else return nullCommitID
+readHEADCommitID :: FilePath -> IO ObjectID
+readHEADCommitID rootPath = do
+  let headFile = rootPath </> headTracker
+  headExists <- doesFileExist headFile
+  if headExists
+    then do
+      branchName <- readFile headFile
+      readBranchRef rootPath branchName
+    else return nullCommitID
 
--- updateHEADBranch :: String -> IO ()
-
--- updatePrevCommitID branchName = do
---   writeFile headTracker commitID
+updateHEADBranch :: String -> String -> IO ()
+updateHEADBranch rootPath branchName = do
+  let headFile = rootPath </> headTracker
+  writeFile headFile branchName
 
 updateBranchRef :: FilePath -> String -> ObjectID -> IO ()
 updateBranchRef rootPath branchName commitID = do
