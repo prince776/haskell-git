@@ -1,9 +1,13 @@
 module Git where
 
 import ContentStore
-import Control.Monad (join)
+import Control.Monad (filterM, join, (>=>))
 import Crypto.Hash (Digest, SHA1, hash)
 import Data.ByteString.Char8 (pack)
+import Data.List (partition)
+import qualified GHC.Base as Monad
+import System.Directory (doesDirectoryExist, listDirectory)
+import System.FilePath (takeFileName, (</>))
 
 {-
 We are not gonna have a staging area, and granularity for commiting for simplicity.
@@ -17,15 +21,39 @@ git commit -m "Commit Name"
 -- to adhere to the interface, and switch here.
 newtype GitClient = GitClient (String, FSContentStore) -- (RepoRoot, ContentStore)
 
-commitTree :: GitClient -> String -> IO GitClient
-commitTree client commitMsg = do
-  (treeID, nextClient) <- writeTree client
-  let commitObj = CommitObject (treeID, commitMsg)
+commitTree :: GitClient -> String -> IO ()
+commitTree (GitClient (repoRoot, fsClient)) commitMsg = do
+  treeEntry <- writeTree fsClient repoRoot
+  let commitObj = GitCommmit $ CommitObject (entryID treeEntry, commitMsg)
+  let (commitObjStr, commitObjStoreID) = serializeObj $ toRawObject commitObj
+  storeIfNotExist fsClient commitObjStoreID commitObjStr
+  return ()
 
-  return nextClient
+writeTree :: FSContentStore -> String -> IO TreeObjectEntry
+writeTree fsClient dir = do
+  isDir <- doesDirectoryExist dir
+  gitObj <-
+    if not isDir
+      then do
+        fileContents <- readFile dir
+        let blobObj = GitBlob $ BlobObject fileContents
+        return blobObj
+      else do
+        dirItems <- listDirectory dir
 
-writeTree :: GitClient -> IO (ObjectID, GitClient)
-writeTree = undefined
+        subdirs <- filterM doesDirectoryExist dirItems
+        files <- filterM (doesDirectoryExist >=> (pure . not)) dirItems
+
+        blobEntries <- mapM (writeTree fsClient . (dir </>)) files
+        subDirEntries <- mapM (writeTree fsClient . (dir </>)) subdirs
+
+        let treeObj = GitTree $ TreeObject $ blobEntries ++ subDirEntries
+        return treeObj
+
+  let rawObj = toRawObject gitObj
+  let (objSer, objSha) = serializeObj rawObj
+  storeIfNotExist fsClient objSha objSer
+  return TreeObjectEntry {entryMode = defaultEntryMode, entryID = objSha, entryType = objType rawObj, entryName = takeFileName dir}
 
 data ObjectType = TypeBlob | TypeTree | TypeCommit deriving (Eq, Show)
 
@@ -37,6 +65,9 @@ data RawObject = ObjectData
     objData :: String
   }
   deriving (Show)
+
+defaultEntryMode :: String
+defaultEntryMode = "00000"
 
 data TreeObjectEntry = TreeObjectEntry
   { entryMode :: String,
@@ -81,18 +112,19 @@ toRawObject gitObj = case gitObj of
 
 parseRawObject :: String -> RawObject
 parseRawObject rawData =
-  let (header, content) = span (/= '\0') rawData
-      (objTypeStr, objLengthStr) = break (== ' ') header
+  let (objTypeStr, restFile) = span (/= ' ') rawData
+      (objLengthStr, contentStr) = break (== ' ') $ drop 1 restFile
       objectType = case objTypeStr of
         "blob" -> TypeBlob
         "tree" -> TypeTree
         "commit" -> TypeCommit
         _ -> error $ "Unknown object type: " ++ objTypeStr
       objectLength = read (drop 1 objLengthStr) :: Int
+      content = drop 1 contentStr
    in ObjectData
         { objType = objectType,
           objLength = objectLength,
-          objData = drop 1 content
+          objData = content
         }
 
 treeObjectFromRawData :: String -> TreeObject
@@ -112,7 +144,7 @@ treeEntryFromRawLine rawLine =
 
 treeEntryToRaw :: TreeObjectEntry -> String
 treeEntryToRaw entry =
-  join -- YAY I THOUGHT OF MONAD JOIN
+  unwords -- YAY I THOUGHT OF MONAD JOIN
     [ entryMode entry,
       if entryType entry == TypeBlob then "blob" else "tree",
       entryID entry,
@@ -133,6 +165,6 @@ serializeType objType = case objType of
 
 serializeObj :: RawObject -> (String, ObjectID) -- Data, ID
 serializeObj rawObj =
-  let finalStr = join [serializeType $ objType rawObj, show $ objLength rawObj, objData rawObj]
+  let finalStr = unwords [serializeType $ objType rawObj, show $ objLength rawObj, objData rawObj]
       id = sha1Hash finalStr
    in (finalStr, id)
