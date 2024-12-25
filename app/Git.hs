@@ -33,6 +33,36 @@ commitTree (GitClient (repoRoot, fsClient)) branch commitMsg = do
   updateBranchRef fsRoot branch commitObjStoreID
   return ()
 
+gitLog :: GitClient -> String -> IO ()
+gitLog (GitClient (repoRoot, fsClient)) branch = do
+  let FileSystemStore fsRoot = fsClient
+  latestCommitID <- readBranchRef fsRoot branch
+  logCommitFrom (GitClient (repoRoot, fsClient)) latestCommitID
+  return ()
+
+logCommitFrom :: GitClient -> ObjectID -> IO ()
+logCommitFrom (GitClient (repoRoot, fsClient)) commitID = do
+  if commitID == nullCommitID
+    then do
+      putStrLn "-----------------------------------------"
+      putStrLn "---END OF HISTORY---"
+      putStrLn "-----------------------------------------"
+    else do
+      commitSerMaybe <- fetch fsClient commitID
+      let commitSer = case commitSerMaybe of
+            Nothing -> undefined
+            (Just x) -> x
+      let rawObj = parseRawObject commitSer
+      let gitObj = fromRawObject rawObj
+      case gitObj of
+        (GitCommmit (CommitObject (treeID, prevCommitID, msg))) -> do
+          putStrLn "-----------------------------------------"
+          putStrLn $ "Commit: " <> msg
+          putStrLn $ "TreeID: " <> treeID
+          putStrLn $ "Commit ID: " <> commitID
+          logCommitFrom (GitClient (repoRoot, fsClient)) prevCommitID
+        otherwise -> undefined
+
 writeTree :: FSContentStore -> String -> IO TreeObjectEntry
 writeTree fsClient dir = do
   isDir <- doesDirectoryExist dir
@@ -104,7 +134,7 @@ fromRawObject rawObj
   | objType rawObj == TypeTree = GitTree $ treeObjectFromRawData $ objData rawObj
   | objType rawObj == TypeCommit =
       let (treeID, rest) = break (== '\n') (objData rawObj)
-          (prevCommitID, restMsg) = break (== '\n') rest
+          (prevCommitID, restMsg) = break (== '\n') (drop 1 rest)
           commitMsg = drop 1 restMsg
        in GitCommmit $ CommitObject (treeID, prevCommitID, commitMsg)
   | otherwise = undefined
