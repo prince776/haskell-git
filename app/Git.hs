@@ -27,15 +27,12 @@ commitTree (GitClient (repoRoot, fsClient)) branch commitMsg = do
   treeEntry <- writeTree fsClient repoRoot
   let FileSystemStore fsRoot = fsClient
   prevCommitIDForBranch <- readBranchRef fsRoot branch
-  putStrLn $ "prev commit for branch: " <> prevCommitIDForBranch
   prevCommitID <-
     if prevCommitIDForBranch == nullCommitID
       then do
-        putStrLn "Reading head commit"
         readHEADCommitID fsRoot
       else do
         return prevCommitIDForBranch
-  putStrLn $ "prev commit: " <> prevCommitID
   let commitObj = GitCommmit $ CommitObject (entryID treeEntry, prevCommitID, commitMsg)
   let (commitObjStr, commitObjStoreID) = serializeObj $ toRawObject commitObj
   storeIfNotExist fsClient commitObjStoreID commitObjStr

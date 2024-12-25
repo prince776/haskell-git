@@ -25,22 +25,14 @@ ghci> let fsStore = FileSystemStore "testDir"
 ghci> let gitClient = GitClient ("testRepo", fsStore)
 
 ghci> commitTree gitClient "master" "Initial Commit"
-prev commit for branch: <NULL COMMIT>
-Reading head commit
-prev commit: <NULL COMMIT>
 
 -- Do some changes to test Repo
 
 ghci> commitTree gitClient "master" "Commit - 2"
-prev commit for branch: aeee54dbcb968288611f25df54fb13c5ba1a886f
-prev commit: aeee54dbcb968288611f25df54fb13c5ba1a886f
 
 -- Do some changes to test Repo
 
 ghci> commitTree gitClient "side" "Side commit"
-prev commit for branch: <NULL COMMIT>
-Reading head commit
-prev commit: 938d377667493a650df59c7665848255c2ece568
 
 ghci> checkoutBranch gitClient "side"
 Loading tree: 1bca87cd6db7a5f8865853d1aa38469fd863f4eb
