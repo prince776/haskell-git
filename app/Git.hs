@@ -43,35 +43,35 @@ commitTree (GitClient (repoRoot, fsClient)) branch commitMsg = do
   updateHEADBranch fsRoot branch
   return ()
 
-gitLog :: GitClient -> String -> IO ()
-gitLog (GitClient (repoRoot, fsClient)) branch = do
+checkoutBranch :: GitClient -> String -> IO ()
+checkoutBranch gc branch = do
+  let (GitClient (repoRoot, fsClient)) = gc
   let FileSystemStore fsRoot = fsClient
-  latestCommitID <- readBranchRef fsRoot branch
-  logCommitFrom (GitClient (repoRoot, fsClient)) latestCommitID
-  return ()
+  commitID <- readBranchRef fsRoot branch
+  checkoutCommit gc commitID
+  updateHEADBranch fsRoot branch
 
-logCommitFrom :: GitClient -> ObjectID -> IO ()
-logCommitFrom (GitClient (repoRoot, fsClient)) commitID = do
-  if commitID == nullCommitID
-    then do
-      putStrLn "-----------------------------------------"
-      putStrLn "---END OF HISTORY---"
-      putStrLn "-----------------------------------------"
-    else do
-      commitSerMaybe <- fetch fsClient commitID
-      let commitSer = case commitSerMaybe of
-            Nothing -> undefined
-            (Just x) -> x
-      let rawObj = parseRawObject commitSer
-      let gitObj = fromRawObject rawObj
-      case gitObj of
-        (GitCommmit (CommitObject (treeID, prevCommitID, msg))) -> do
-          putStrLn "-----------------------------------------"
-          putStrLn $ "Commit: " <> msg
-          putStrLn $ "TreeID: " <> treeID
-          putStrLn $ "Commit ID: " <> commitID
-          logCommitFrom (GitClient (repoRoot, fsClient)) prevCommitID
-        otherwise -> undefined
+checkoutCommit :: GitClient -> ObjectID -> IO ()
+checkoutCommit gc commitID = do
+  let (GitClient (repoRoot, fsClient)) = gc
+  let FileSystemStore fsRoot = fsClient
+
+  gitCommit <- readGitObj fsClient commitID
+  let (CommitObject (treeID, _, _)) = asCommit gitCommit
+  putStrLn $ "Loading tree: " <> treeID
+  loadTree fsClient treeID repoRoot
+
+loadTree :: FSContentStore -> ObjectID -> FilePath -> IO ()
+loadTree fsClient objectID dest = do
+  gitObj <- readGitObj fsClient objectID
+
+  case gitObj of
+    (GitBlob (BlobObject fileData)) -> do
+      writeFile dest fileData
+    (GitTree (TreeObject treeEntries)) -> do
+      createDirectoryIfMissing True dest
+      mapM_ (\e -> loadTree fsClient (entryID e) (dest </> entryName e)) treeEntries
+    otherwise -> undefined
 
 writeTree :: FSContentStore -> String -> IO TreeObjectEntry
 writeTree fsClient dir = do
@@ -98,6 +98,40 @@ writeTree fsClient dir = do
   let (objSer, objSha) = serializeObj rawObj
   storeIfNotExist fsClient objSha objSer
   return TreeObjectEntry {entryMode = defaultEntryMode, entryID = objSha, entryType = objType rawObj, entryName = takeFileName dir}
+
+gitLog :: GitClient -> String -> IO ()
+gitLog (GitClient (repoRoot, fsClient)) branch = do
+  let FileSystemStore fsRoot = fsClient
+  latestCommitID <- readBranchRef fsRoot branch
+  logCommitFrom (GitClient (repoRoot, fsClient)) latestCommitID
+  return ()
+
+logCommitFrom :: GitClient -> ObjectID -> IO ()
+logCommitFrom (GitClient (repoRoot, fsClient)) commitID = do
+  if commitID == nullCommitID
+    then do
+      putStrLn "-----------------------------------------"
+      putStrLn "---END OF HISTORY---"
+      putStrLn "-----------------------------------------"
+    else do
+      gitObj <- readGitObj fsClient commitID
+      case gitObj of
+        (GitCommmit (CommitObject (treeID, prevCommitID, msg))) -> do
+          putStrLn "-----------------------------------------"
+          putStrLn $ "Commit: " <> msg
+          putStrLn $ "TreeID: " <> treeID
+          putStrLn $ "Commit ID: " <> commitID
+          logCommitFrom (GitClient (repoRoot, fsClient)) prevCommitID
+        otherwise -> undefined
+
+readGitObj :: FSContentStore -> ObjectID -> IO GitObject
+readGitObj fsClient objID = do
+  commitSerMaybe <- fetch fsClient objID
+  let objSer = case commitSerMaybe of
+        Nothing -> undefined
+        (Just x) -> x
+  let rawObj = parseRawObject objSer
+  return $ fromRawObject rawObj
 
 data ObjectType = TypeBlob | TypeTree | TypeCommit deriving (Eq, Show)
 
@@ -134,6 +168,10 @@ Data Format:
 newtype CommitObject = CommitObject (ObjectID, ObjectID, String) deriving (Show)
 
 data GitObject = GitBlob BlobObject | GitTree TreeObject | GitCommmit CommitObject deriving (Show)
+
+asCommit :: GitObject -> CommitObject
+asCommit (GitCommmit x) = x
+asCommit _ = undefined
 
 nullCommitID :: ObjectID
 nullCommitID = "<NULL COMMIT>"
